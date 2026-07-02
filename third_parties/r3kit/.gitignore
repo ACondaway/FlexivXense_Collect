@@ -1,0 +1,13 @@
+.DS_Store
+*/.DS_Store
+
+__pycache__/
+
+*.egg-info/
+
+.vscode/
+
+build/
+
+r3kit/devices/.meta/
+r3kit/devices/.temp/
