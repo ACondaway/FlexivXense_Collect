@@ -17,7 +17,7 @@ FIRST_SN="Rizon4s-063652"
 SECOND_SN="Rizon4s-063586"
 
 # Data collection
-SAVE_ROOT="/home/xense/flexiv_hizon4s/Data/pick_test"
+SAVE_ROOT="/home/xense/flexiv_hizon4s/Data/muse_test"
 SESSION_NAME=""
 FPS="30"
 
@@ -39,8 +39,10 @@ SLAVE_CLOSE_WIDTH="0.0"
 
 # Xense tactile sensors (end-effector cameras). Leave empty to disable.
 # Set each to the device ID string reported by the Xense SDK.
-XENSE_LEFT=""
-XENSE_RIGHT=""
+XENSE_LEFT="OG001452"
+XENSE_LEFT_MAC="1659f0e0dde0"
+XENSE_RIGHT="OG001454"
+XENSE_RIGHT_MAC="1659f0e0dde0"
 XENSE_FPS="50"
 
 # Optional LAN interface whitelist. Leave empty to let TDK try all interfaces.
@@ -91,8 +93,14 @@ done
 if [ -n "$XENSE_LEFT" ]; then
   set -- "$@" --xense-left-id "$XENSE_LEFT"
 fi
+if [ -n "$XENSE_LEFT_MAC" ]; then
+  set -- "$@" --xense-left-mac "$XENSE_LEFT_MAC"
+fi
 if [ -n "$XENSE_RIGHT" ]; then
   set -- "$@" --xense-right-id "$XENSE_RIGHT"
+fi
+if [ -n "$XENSE_RIGHT_MAC" ]; then
+  set -- "$@" --xense-right-mac "$XENSE_RIGHT_MAC"
 fi
 if [ -n "$XENSE_LEFT" ] || [ -n "$XENSE_RIGHT" ]; then
   set -- "$@" --xense-fps "$XENSE_FPS"

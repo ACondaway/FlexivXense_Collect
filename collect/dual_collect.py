@@ -69,7 +69,9 @@ def parse_args():
     parser.add_argument("--num-writers", type=int, default=4, help="Number of parallel disk-writer subprocesses")
     parser.add_argument("--png-level", type=int, default=1, help="PNG compression level 0–9 (0=none, 9=max)")
     parser.add_argument("--xense-left-id", default=None, help="Left end-effector Xense camera device ID")
+    parser.add_argument("--xense-left-mac", default=None, help="Left end-effector Xense camera MAC address")
     parser.add_argument("--xense-right-id", default=None, help="Right end-effector Xense camera device ID")
+    parser.add_argument("--xense-right-mac", default=None, help="Right end-effector Xense camera MAC address")
     parser.add_argument("--xense-fps", type=int, default=50, help="Xense tactile sensor sampling rate Hz")
     args = parser.parse_args()
     if args.use_gripper and not args.slave_gripper_id:
@@ -305,11 +307,13 @@ def main() -> None:
             xense_sensors = {}
             if args.xense_left_id:
                 xense_sensors["xense_left"] = init_xense_camera(
-                    args.xense_left_id, name="xense_left", fps=args.xense_fps
+                    args.xense_left_id, name="xense_left", fps=args.xense_fps,
+                    mac_addr=args.xense_left_mac,
                 )
             if args.xense_right_id:
                 xense_sensors["xense_right"] = init_xense_camera(
-                    args.xense_right_id, name="xense_right", fps=args.xense_fps
+                    args.xense_right_id, name="xense_right", fps=args.xense_fps,
+                    mac_addr=args.xense_right_mac,
                 )
 
             cameras = init_cameras(D415_CAMERAS, args.fps)

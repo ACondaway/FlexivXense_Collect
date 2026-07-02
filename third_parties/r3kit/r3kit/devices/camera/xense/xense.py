@@ -24,6 +24,7 @@ class Xense(CameraBase):
         self,
         device_id: Optional[str] = None,
         ip_address: Optional[str] = None,
+        mac_addr: Optional[str] = None,
         config_path: Optional[str] = None,
         video_path: Optional[str] = None,
         name: str = 'Xense',
@@ -33,18 +34,24 @@ class Xense(CameraBase):
         super().__init__(name=name)
         self.device_id = device_id
         self.ip_address = ip_address
+        self.mac_addr = mac_addr
         self.config_path = config_path
         self.video_path = video_path
         self.in_streaming = False
         self.fps = fps
 
-        self.sensor = Sensor.create(
-            device_id,
-            ip_address=ip_address,
-            use_gpu=use_gpu,
-            config_path=config_path,
-            video_path=video_path
-        )
+        create_kwargs = {}
+        if ip_address is not None:
+            create_kwargs['ip_address'] = ip_address
+        if mac_addr is not None:
+            create_kwargs['mac_addr'] = mac_addr
+        if use_gpu:
+            create_kwargs['use_gpu'] = use_gpu
+        if config_path is not None:
+            create_kwargs['config_path'] = config_path
+        if video_path is not None:
+            create_kwargs['video_path'] = video_path
+        self.sensor = Sensor.create(device_id, **create_kwargs)
 
         rectify = self.sensor.selectSensorInfo(Sensor.OutputType.Rectify)
         self.rectify_dtype = rectify.dtype

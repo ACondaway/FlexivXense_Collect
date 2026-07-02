@@ -101,11 +101,11 @@ def init_xense(gripper_id: str, name: str = "Xense"):
     return gripper
 
 
-def init_xense_camera(device_id: str, name: str = "xense", fps: int = 50):
+def init_xense_camera(device_id: str, name: str = "xense", fps: int = 50, mac_addr: str = None):
     """Initialise a Xense tactile camera sensor (end-effector, not gripper)."""
     from r3kit.devices.camera.xense.xense import Xense as XenseCam
 
-    return XenseCam(device_id=device_id, name=name, fps=fps)
+    return XenseCam(device_id=device_id, mac_addr=mac_addr, name=name, fps=fps)
 
 
 class AnglerGripperController:
