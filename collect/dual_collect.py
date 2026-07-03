@@ -224,8 +224,6 @@ def run_keyboard_loop(
                 teleop_pair.activate(False)
                 activated = False
                 logger.info("Teleoperation deactivated by keyboard")
-                logger.info("Homing robots after teleoperation ...")
-                teleop_pair.home_robots()
             elif key == "c" and not recording:
                 session_dir, stop_event, collect_thread = start_recording(
                     args,

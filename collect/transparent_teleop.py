@@ -74,34 +74,6 @@ class TransparentCartesianTeleopPair:
             self.cart_teleop.Start()
             self.started = True
 
-    def home_robots(
-        self,
-        first_tool_name: str = "tool2",
-        second_tool_name: str = "xense",
-    ) -> None:
-        """Home both robots, then restore TDK control.
-
-        Sequence: Stop TDK → home first robot → home second robot → Start TDK.
-        Must be called while NOT engaged (i.e. before activate(True)).
-        """
-        import sys
-        import os
-        sys.path.insert(0, os.path.dirname(__file__))
-        from homing import home_robot
-
-        with self.lock:
-            if self.started:
-                self.cart_teleop.Stop()
-                self.started = False
-
-        home_robot(self.first_sn, first_tool_name)
-        home_robot(self.second_sn, second_tool_name)
-
-        with self.lock:
-            self.cart_teleop.Init()   # re-initialize: restores TDK control mode after homing
-            self.cart_teleop.Start()
-            self.started = True
-
     # ------------------------------------------------------------------
     # Teleoperation control
     # ------------------------------------------------------------------
