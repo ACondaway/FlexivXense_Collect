@@ -377,27 +377,16 @@ class XenseCapture:
                 time.sleep(wait)
             last_t = time.perf_counter()
 
-            rectify, marker3d, marker3d_init, marker3d_flow, depth = (
-                self.xense.sensor.selectSensorInfo(
-                    Sensor.OutputType.Rectify,
-                    Sensor.OutputType.Marker3D,
-                    Sensor.OutputType.Marker3DInit,
-                    Sensor.OutputType.Marker3DFlow,
-                    Sensor.OutputType.Depth,
-                )
+            rectify, depth = self.xense.sensor.selectSensorInfo(
+                Sensor.OutputType.Rectify,
+                Sensor.OutputType.Depth,
             )
             t = time.perf_counter()
             self._timestamps.append(t)
 
             idx = self._frame_idx
             npys = []
-            for subdir, arr in (
-                ("rectify",      rectify),
-                ("marker3d",     marker3d),
-                ("marker3d_init", marker3d_init),
-                ("marker3d_flow", marker3d_flow),
-                ("depth",        depth),
-            ):
+            for subdir, arr in (("rectify", rectify), ("depth", depth)):
                 if arr is not None:
                     npys.append(NpyWrite(
                         path=os.path.join(base, subdir, f"{idx:05d}.npy"),

@@ -27,22 +27,10 @@
     ├── xense_left/                               # 仅当 XENSE_LEFT 启用
     │   ├── rectify/
     │   │   └── {NNNNN}.npy
-    │   ├── marker3d/
-    │   │   └── {NNNNN}.npy
-    │   ├── marker3d_init/
-    │   │   └── {NNNNN}.npy
-    │   ├── marker3d_flow/
-    │   │   └── {NNNNN}.npy
     │   └── depth/
     │       └── {NNNNN}.npy
     └── xense_right/                              # 仅当 XENSE_RIGHT 启用
         ├── rectify/
-        │   └── {NNNNN}.npy
-        ├── marker3d/
-        │   └── {NNNNN}.npy
-        ├── marker3d_init/
-        │   └── {NNNNN}.npy
-        ├── marker3d_flow/
         │   └── {NNNNN}.npy
         └── depth/
             └── {NNNNN}.npy
@@ -115,14 +103,11 @@
 **采样率**: `XENSE_FPS` Hz（默认 50 Hz），rate-control 控制。
 **时间戳**: `timestamps/xense_xense_left_timestamps.npy` / `timestamps/xense_xense_right_timestamps.npy`，时钟为 `time.perf_counter()`（秒）。
 
-每帧通过一次 `sensor.selectSensorInfo(Rectify, Marker3D, Marker3DInit, Marker3DFlow, Depth)` 调用获取全部 5 路输出，保证同帧数据时序一致。
+每帧通过一次 `sensor.selectSensorInfo(Rectify, Depth)` 调用获取两路输出，保证同帧数据时序一致。
 
 | 子目录 | 文件名 | dtype | shape | 内容 |
 |---|---|---|---|---|
 | `rectify/` | `{N}.npy` | 由 SDK 决定 | 由传感器配置决定 | 校正后的原始触觉图像阵列 |
-| `marker3d/` | `{N}.npy` | 由 SDK 决定 | `(N_markers, 3)` | 当前帧标记点 3D 坐标 (x, y, z)，单位 mm |
-| `marker3d_init/` | `{N}.npy` | 由 SDK 决定 | `(N_markers, 3)` | 标记点初始参考 3D 坐标，用于计算相对位移 |
-| `marker3d_flow/` | `{N}.npy` | 由 SDK 决定 | `(N_markers, 3)` | 标记点相对初始位置的 3D 位移流 |
 | `depth/` | `{N}.npy` | 由 SDK 决定 | 由传感器配置决定 | 接触面深度图 |
 
 `dtype` 和具体 `shape` 在运行时由 `sensor.selectSensorInfo()` 返回值确定，各传感器型号可能不同，后处理时以实际数组为准。

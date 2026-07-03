@@ -55,7 +55,7 @@ def create_session_dirs(
     # xense tactile sensor directories
     if xense_sensors:
         for xense_name in xense_sensors.keys():
-            for subdir in ("rectify", "marker3d", "marker3d_init", "marker3d_flow", "depth"):
+            for subdir in ("rectify", "depth"):
                 os.makedirs(os.path.join(session_dir, xense_name, subdir), exist_ok=True)
 
     print(f"Data will be saved to: {session_dir}")
