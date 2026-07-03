@@ -224,6 +224,8 @@ def run_keyboard_loop(
                 teleop_pair.activate(False)
                 activated = False
                 logger.info("Teleoperation deactivated by keyboard")
+                logger.info("Homing robots after teleoperation ...")
+                teleop_pair.home_robots()
             elif key == "c" and not recording:
                 session_dir, stop_event, collect_thread = start_recording(
                     args,
@@ -262,7 +264,10 @@ def run_keyboard_loop(
             stop_collection(stop_event, collect_thread)
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_term_settings)
         if activated:
-            teleop_pair.activate(False)
+            try:
+                teleop_pair.activate(False)
+            except Exception as e:
+                logger.warning("Could not disengage teleop during cleanup: %s", e)
 
 
 def main() -> None:

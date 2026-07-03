@@ -74,6 +74,33 @@ class TransparentCartesianTeleopPair:
             self.cart_teleop.Start()
             self.started = True
 
+    def home_robots(
+        self,
+        first_tool_name: str = "tool2",
+        second_tool_name: str = "xense",
+    ) -> None:
+        """Home both robots, then restore TDK control.
+
+        Sequence: Stop TDK → home first robot → home second robot → Start TDK.
+        Must be called while NOT engaged (i.e. before activate(True)).
+        """
+        import sys
+        import os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from homing import home_robot
+
+        with self.lock:
+            if self.started:
+                self.cart_teleop.Stop()
+                self.started = False
+
+        home_robot(self.first_sn, first_tool_name)
+        home_robot(self.second_sn, second_tool_name)
+
+        with self.lock:
+            self.cart_teleop.Start()
+            self.started = True
+
     # ------------------------------------------------------------------
     # Teleoperation control
     # ------------------------------------------------------------------
@@ -85,8 +112,15 @@ class TransparentCartesianTeleopPair:
             self.engaged = activated
 
     def sync_null_space_postures(self) -> np.ndarray:
-        """Sync follower null-space posture to the leader's current joint angles."""
+        """Sync follower null-space posture to the leader's current joint angles.
+
+        Skipped silently when the TDK pair is in a stopped state (e.g. after
+        a robot fault) so the calling loop does not crash before any_fault()
+        detects the condition on its next iteration.
+        """
         with self.lock:
+            if not self.started or self.cart_teleop.stopped(self.robot_pair_idx):
+                return np.array([])
             leader_q = self.cart_teleop.robot_states(self.robot_pair_idx)[0].q
             self.cart_teleop.SetLeaderNullSpacePosture(self.robot_pair_idx, leader_q)
             self.cart_teleop.SetFollowerNullSpacePosture(self.robot_pair_idx, leader_q)
@@ -178,7 +212,10 @@ class TransparentCartesianTeleopPair:
         """Disengage this pair and stop the TDK control loop."""
         with self.lock:
             if self.engaged:
-                self.cart_teleop.Engage(self.robot_pair_idx, False)
+                try:
+                    self.cart_teleop.Engage(self.robot_pair_idx, False)
+                except Exception:
+                    pass  # TDK may have already stopped due to a fault
                 self.engaged = False
             if self.started:
                 self.cart_teleop.Stop()
