@@ -98,6 +98,7 @@ class TransparentCartesianTeleopPair:
         home_robot(self.second_sn, second_tool_name)
 
         with self.lock:
+            self.cart_teleop.Init()   # re-initialize: restores TDK control mode after homing
             self.cart_teleop.Start()
             self.started = True
 
