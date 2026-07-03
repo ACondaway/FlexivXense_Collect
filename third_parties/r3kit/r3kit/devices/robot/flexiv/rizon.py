@@ -9,7 +9,6 @@ from multiprocessing import shared_memory, Manager
 from copy import deepcopy
 from functools import partial
 import flexivrdk
-assert flexivrdk.__version__ == '1.8.0', "Only support Flexiv RDK v1.8.0, current version is {flexivrdk.__version__}"
 
 from r3kit.devices.robot.base import RobotBase
 from r3kit.devices.robot.flexiv.config import *
