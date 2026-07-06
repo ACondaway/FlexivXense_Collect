@@ -437,14 +437,59 @@ def _depth_to_bgr(frame: np.ndarray) -> np.ndarray:
     return cv2.applyColorMap(gray, cv2.COLORMAP_VIRIDIS)
 
 
+class _FfmpegWriter:
+    """
+    Thin wrapper around an ffmpeg subprocess that accepts raw BGR24 frames
+    piped to stdin and encodes them to H.264 MP4.
+
+    Usage:
+        with _FfmpegWriter(out_path, w, h, fps) as writer:
+            writer.write(bgr_frame)   # (H, W, 3) uint8
+    """
+
+    def __init__(self, out_path: str, w: int, h: int, fps: int) -> None:
+        import subprocess
+        self._proc = subprocess.Popen(
+            [
+                "ffmpeg", "-y",
+                "-f", "rawvideo", "-vcodec", "rawvideo",
+                "-s", f"{w}x{h}",
+                "-pix_fmt", "bgr24",
+                "-r", str(fps),
+                "-i", "pipe:0",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-crf", "18",
+                "-preset", "fast",
+                out_path,
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def write(self, frame: np.ndarray) -> None:
+        self._proc.stdin.write(frame.tobytes())
+
+    def close(self) -> None:
+        self._proc.stdin.close()
+        self._proc.wait()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+
 def _make_videos(hdf5_path: str, videos_dir: str, fps: int = 30) -> None:
     """
-    Export all image streams from a converted HDF5 as MP4 videos.
+    Export all image streams from a converted HDF5 as MP4 videos via ffmpeg.
 
     Handled dataset types
     ─────────────────────
-    */rgb   (N,)       |S{max}   JPEG bytes  → decode directly
-    */depth (N, H, W)  float32   normalise + COLORMAP_VIRIDIS
+    */rgb   (N,)       |S{max}   JPEG bytes  → decode → pipe to ffmpeg
+    */depth (N, H, W)  float32   normalise + COLORMAP_VIRIDIS → pipe to ffmpeg
 
     Output filenames (path separators → underscores):
       observation/head/rgb       → observation_head_rgb.mp4
@@ -468,40 +513,35 @@ def _make_videos(hdf5_path: str, videos_dir: str, fps: int = 30) -> None:
                 depth_streams[name] = obj[:]
         f.visititems(_visit)
 
-    def _open_writer(out_path: str, h: int, w: int) -> cv2.VideoWriter:
-        return cv2.VideoWriter(
-            out_path,
-            cv2.VideoWriter_fourcc(*"mp4v"),
-            fps,
-            (w, h),
-        )
-
     # ── RGB streams ──────────────────────────────────────────────────────────
     for stream_path, frames in rgb_streams.items():
         out_path = os.path.join(videos_dir, stream_path.replace("/", "_") + ".mp4")
-        first_bytes = bytes(frames[0]).rstrip(b"\x00")
-        first = cv2.imdecode(np.frombuffer(first_bytes, np.uint8), cv2.IMREAD_COLOR)
+        first = cv2.imdecode(
+            np.frombuffer(bytes(frames[0]).rstrip(b"\x00"), np.uint8),
+            cv2.IMREAD_COLOR,
+        )
         if first is None:
             logger.warning("Cannot decode first frame of %s — skipping", stream_path)
             continue
-        writer = _open_writer(out_path, *first.shape[:2])
-        writer.write(first)
-        for raw in frames[1:]:
-            b = bytes(raw).rstrip(b"\x00")
-            frame = cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_COLOR)
-            if frame is not None:
-                writer.write(frame)
-        writer.release()
+        h, w = first.shape[:2]
+        with _FfmpegWriter(out_path, w, h, fps) as writer:
+            writer.write(first)
+            for raw in frames[1:]:
+                frame = cv2.imdecode(
+                    np.frombuffer(bytes(raw).rstrip(b"\x00"), np.uint8),
+                    cv2.IMREAD_COLOR,
+                )
+                if frame is not None:
+                    writer.write(frame)
         logger.info("Video: %s → %s", stream_path, out_path)
 
     # ── Depth streams ─────────────────────────────────────────────────────────
     for stream_path, frames in depth_streams.items():
         out_path = os.path.join(videos_dir, stream_path.replace("/", "_") + ".mp4")
         h, w = frames.shape[1], frames.shape[2]
-        writer = _open_writer(out_path, h, w)
-        for frame in frames:
-            writer.write(_depth_to_bgr(frame))
-        writer.release()
+        with _FfmpegWriter(out_path, w, h, fps) as writer:
+            for frame in frames:
+                writer.write(_depth_to_bgr(frame))
         logger.info("Video: %s → %s", stream_path, out_path)
 
 
