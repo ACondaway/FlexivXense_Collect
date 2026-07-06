@@ -17,7 +17,7 @@ FIRST_SN="Rizon4s-063652"
 SECOND_SN="Rizon4s-063586"
 
 # Data collection
-SAVE_ROOT="/home/xense/flexiv_hizon4s/Data/muse_test"
+SAVE_ROOT="/home/xense/MUSE_workspace/FlexivXense_Collect/data"
 SESSION_NAME=""
 FPS="30"
 
