@@ -168,7 +168,7 @@ def detect_cameras(session_dir: str) -> List[str]:
     """Sorted list of camera subdirectory names that have a color/ subfolder."""
     return sorted(
         d for d in os.listdir(session_dir)
-        if d.startswith("cam_")
+        if d.startswith("head_cam")
         and os.path.isdir(os.path.join(session_dir, d, "color"))
     )
 

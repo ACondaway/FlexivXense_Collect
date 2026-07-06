@@ -18,7 +18,7 @@ from r3kit.devices.camera.realsense.d415 import D415
 
 FPS = 30
 D415_CAMERAS = {
-    "cam_327322062498": "327322062498",
+    "head_cam": "260322274925",
 }
 
 
