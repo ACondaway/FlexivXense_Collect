@@ -8,7 +8,7 @@ Raw schema (per session_dir/)
   cam_{name}/depth/{frame:016d}.png       → (not in target schema, skipped)
   tcps/tcp_{idx:05d}.npy                  → actor/slot[:, :7] + embodiment/ee[:, :7]
                                              (shape (8,): xyz·3 + quat_xyzw·4 + gripper·1)
-  angles/angle_{idx:05d}.npy             → (not written; joint omitted per schema)
+  angles/angle_{idx:05d}.npy             → embodiment/joint
   master_tcps/tcp_{idx:05d}.npy          → actor/prism[:, :7]
   master_angles/angle_{idx:05d}.npy      → (not in target schema, skipped)
   timestamps/cam_{name}_timestamps.npy   → used for nearest-neighbour alignment
@@ -26,7 +26,7 @@ Target HDF5 schema (matches data/1.hdf5)
   atom/id             (N,)    int64     episode index (per-file constant)
   atom/tag            (N,)    |S5       b"move" for all teleoperation frames
   embodiment/ee       (N, 7)  float32   slave end-effector xyz+quat_xyzw
-  embodiment/ee       (N, 7)  float32   slave end-effector xyz+quat_xyzw
+  embodiment/joint    (N, 8)  float32   slave joints·7 + gripper·1
   observation/{role}/rgb  (N,)  |S{max}  JPEG bytes (role: head)
   step                (N,)    int64     [0, 1, …, N-1]
   tactile/{role}/depth    (N,H,W)  float32
@@ -186,15 +186,19 @@ def detect_xense(session_dir: str) -> List[str]:
 
 def load_robot_data(
     session_dir: str,
-) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """
     Returns
     -------
     slave_pose  : (N, 8) float32 — xyz·3 + quat_xyzw·4 + gripper·1
+    slave_joint : (N, D) float32 — D = n_joints + 1 (gripper)
+                                   For Flexiv Rizon4s: D=8 (7 joints + 1 gripper)
     master_pose : (N, 8) float32 or None
     """
-    tcp_paths  = sorted_glob(os.path.join(session_dir, "tcps"), "tcp_*.npy")
-    slave_pose = np.stack([np.load(p) for p in tcp_paths], axis=0).astype(np.float32)
+    tcp_paths   = sorted_glob(os.path.join(session_dir, "tcps"),   "tcp_*.npy")
+    angle_paths = sorted_glob(os.path.join(session_dir, "angles"), "angle_*.npy")
+    slave_pose  = np.stack([np.load(p) for p in tcp_paths],   axis=0).astype(np.float32)
+    slave_joint = np.stack([np.load(p) for p in angle_paths], axis=0).astype(np.float32)
 
     master_pose = None
     mtcp_dir = os.path.join(session_dir, "master_tcps")
@@ -203,7 +207,7 @@ def load_robot_data(
         if mpaths:
             master_pose = np.stack([np.load(p) for p in mpaths], axis=0).astype(np.float32)
 
-    return slave_pose, master_pose
+    return slave_pose, slave_joint, master_pose
 
 
 def load_all_timestamps(session_dir: str) -> Dict[str, np.ndarray]:
@@ -326,7 +330,7 @@ def _convert_session(
     tag: bytes,
 ) -> None:
     # ── robot data ──────────────────────────────────────────────────────────
-    slave_pose, master_pose = load_robot_data(session_dir)
+    slave_pose, slave_joint, master_pose = load_robot_data(session_dir)
     N = len(slave_pose)
     assert N > 0, "No robot frames found"
     assert N > 0, "No robot frames found"
@@ -381,8 +385,9 @@ def _convert_session(
         f.create_dataset("atom/tag", data=np.array([tag] * N, dtype="S5"))
 
         # embodiment
-        # embodiment — ee pose only (joint removed)
-        f.create_dataset("embodiment/ee", data=slave_pose[:, :7], dtype=np.float32)
+        # embodiment
+        f.create_dataset("embodiment/ee",    data=slave_pose[:, :7], dtype=np.float32)
+        f.create_dataset("embodiment/joint", data=slave_joint,        dtype=np.float32)
 
         # step
         f.create_dataset("step", data=np.arange(N, dtype=np.int64))
@@ -416,6 +421,90 @@ def _convert_session(
     logger.info("Wrote %d frames → %s", N, out_path)
 
 
+# ─── video export ─────────────────────────────────────────────────────────────
+
+def _depth_to_bgr(frame: np.ndarray) -> np.ndarray:
+    """
+    Normalise a single float32 depth frame (H, W) to a BGR uint8 image
+    using 2nd–98th percentile clipping + COLORMAP_VIRIDIS.
+    Returns (H, W, 3) uint8.
+    """
+    lo, hi = np.percentile(frame, (2, 98))
+    if hi <= lo:
+        hi = lo + 1.0
+    norm = np.clip((frame - lo) / (hi - lo), 0.0, 1.0)
+    gray = (norm * 255).astype(np.uint8)
+    return cv2.applyColorMap(gray, cv2.COLORMAP_VIRIDIS)
+
+
+def _make_videos(hdf5_path: str, videos_dir: str, fps: int = 30) -> None:
+    """
+    Export all image streams from a converted HDF5 as MP4 videos.
+
+    Handled dataset types
+    ─────────────────────
+    */rgb   (N,)       |S{max}   JPEG bytes  → decode directly
+    */depth (N, H, W)  float32   normalise + COLORMAP_VIRIDIS
+
+    Output filenames (path separators → underscores):
+      observation/head/rgb       → observation_head_rgb.mp4
+      tactile/left_gsmini/rgb    → tactile_left_gsmini_rgb.mp4
+      tactile/left_gsmini/depth  → tactile_left_gsmini_depth.mp4
+      tactile/right_gsmini/rgb   → tactile_right_gsmini_rgb.mp4
+      tactile/right_gsmini/depth → tactile_right_gsmini_depth.mp4
+    """
+    os.makedirs(videos_dir, exist_ok=True)
+
+    rgb_streams:   Dict[str, np.ndarray] = {}
+    depth_streams: Dict[str, np.ndarray] = {}
+
+    with h5py.File(hdf5_path, "r") as f:
+        def _visit(name: str, obj: h5py.HLObject) -> None:
+            if not isinstance(obj, h5py.Dataset):
+                return
+            if name.endswith("/rgb") and obj.ndim == 1 and obj.dtype.kind == "S":
+                rgb_streams[name] = obj[:]
+            elif name.endswith("/depth") and obj.ndim == 3 and obj.dtype == np.float32:
+                depth_streams[name] = obj[:]
+        f.visititems(_visit)
+
+    def _open_writer(out_path: str, h: int, w: int) -> cv2.VideoWriter:
+        return cv2.VideoWriter(
+            out_path,
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (w, h),
+        )
+
+    # ── RGB streams ──────────────────────────────────────────────────────────
+    for stream_path, frames in rgb_streams.items():
+        out_path = os.path.join(videos_dir, stream_path.replace("/", "_") + ".mp4")
+        first_bytes = bytes(frames[0]).rstrip(b"\x00")
+        first = cv2.imdecode(np.frombuffer(first_bytes, np.uint8), cv2.IMREAD_COLOR)
+        if first is None:
+            logger.warning("Cannot decode first frame of %s — skipping", stream_path)
+            continue
+        writer = _open_writer(out_path, *first.shape[:2])
+        writer.write(first)
+        for raw in frames[1:]:
+            b = bytes(raw).rstrip(b"\x00")
+            frame = cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_COLOR)
+            if frame is not None:
+                writer.write(frame)
+        writer.release()
+        logger.info("Video: %s → %s", stream_path, out_path)
+
+    # ── Depth streams ─────────────────────────────────────────────────────────
+    for stream_path, frames in depth_streams.items():
+        out_path = os.path.join(videos_dir, stream_path.replace("/", "_") + ".mp4")
+        h, w = frames.shape[1], frames.shape[2]
+        writer = _open_writer(out_path, h, w)
+        for frame in frames:
+            writer.write(_depth_to_bgr(frame))
+        writer.release()
+        logger.info("Video: %s → %s", stream_path, out_path)
+
+
 def process_session_worker(args: Tuple) -> str:
     """
     Top-level function for each multiprocessing worker.
@@ -425,6 +514,7 @@ def process_session_worker(args: Tuple) -> str:
         session_dir, out_dir, episode_id,
         jpeg_quality, n_encode_threads,
         cam_role_map, xense_role_map, tag,
+        video_fps,
     ) = args
 
     logging.basicConfig(
@@ -433,7 +523,8 @@ def process_session_worker(args: Tuple) -> str:
     )
 
     session_name = os.path.basename(session_dir)
-    out_path = os.path.join(out_dir, f"{session_name}.hdf5")
+    out_path   = os.path.join(out_dir, f"{session_name}.hdf5")
+    videos_dir = os.path.join(out_dir, "videos", session_name)
 
     if os.path.exists(out_path):
         return f"SKIP (exists): {out_path}"
@@ -444,6 +535,7 @@ def process_session_worker(args: Tuple) -> str:
             jpeg_quality, n_encode_threads,
             cam_role_map, xense_role_map, tag,
         )
+        _make_videos(out_path, videos_dir, fps=video_fps)
         return f"OK: {out_path}"
     except Exception as exc:
         import traceback
@@ -505,6 +597,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--overwrite", action="store_true",
         help="Overwrite existing HDF5 files (default: skip).",
+    )
+    p.add_argument(
+        "--video-fps", type=int, default=30,
+        help="Frame rate for exported MP4 videos (default 30).",
     )
     return p.parse_args()
 
@@ -580,6 +676,7 @@ def main() -> None:
             effective_cam_roles(session_dir),
             effective_xense_roles(session_dir),
             tag_bytes,
+            args.video_fps,
         ))
 
     if not work_items:

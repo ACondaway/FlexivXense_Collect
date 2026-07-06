@@ -152,6 +152,7 @@ atom/
   tag     (N,)    |S5       帧标签，默认 b"move"
 embodiment/
   ee      (N, 7)  float32   从臂末端位姿（同 actor/slot）
+  joint   (N, 8)  float32   从臂关节角·7 + 夹爪宽度·1
 observation/
   head/
     rgb   (N,)    |S{max}   头部相机彩色帧，JPEG 编码字节
