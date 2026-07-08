@@ -484,19 +484,17 @@ class _FfmpegWriter:
 
 def _make_videos(hdf5_path: str, videos_dir: str, fps: int = 30) -> None:
     """
-    Export all image streams from a converted HDF5 as MP4 videos via ffmpeg.
+    Export all image streams from a converted HDF5 as a single tiled MP4 video.
 
-    Handled dataset types
-    ─────────────────────
-    */rgb   (N,)       |S{max}   JPEG bytes  → decode → pipe to ffmpeg
-    */depth (N, H, W)  float32   normalise + COLORMAP_VIRIDIS → pipe to ffmpeg
+    Layout
+    ──────
+    Row 0 : observation cameras (sorted) — e.g. head rgb
+    Row 1 : tactile streams — rgb then depth interleaved per sensor
+              e.g.  left_gsmini rgb | left_gsmini depth | right_gsmini rgb | right_gsmini depth
 
-    Output filenames (path separators → underscores):
-      observation/head/rgb       → observation_head_rgb.mp4
-      tactile/left_gsmini/rgb    → tactile_left_gsmini_rgb.mp4
-      tactile/left_gsmini/depth  → tactile_left_gsmini_depth.mp4
-      tactile/right_gsmini/rgb   → tactile_right_gsmini_rgb.mp4
-      tactile/right_gsmini/depth → tactile_right_gsmini_depth.mp4
+    All tiles are scaled to a common tile height (tallest first-frame).
+    Each tile carries a short text label.
+    Output: <videos_dir>/tiled.mp4
     """
     os.makedirs(videos_dir, exist_ok=True)
 
@@ -513,36 +511,139 @@ def _make_videos(hdf5_path: str, videos_dir: str, fps: int = 30) -> None:
                 depth_streams[name] = obj[:]
         f.visititems(_visit)
 
-    # ── RGB streams ──────────────────────────────────────────────────────────
-    for stream_path, frames in rgb_streams.items():
-        out_path = os.path.join(videos_dir, stream_path.replace("/", "_") + ".mp4")
-        first = cv2.imdecode(
-            np.frombuffer(bytes(frames[0]).rstrip(b"\x00"), np.uint8),
-            cv2.IMREAD_COLOR,
-        )
-        if first is None:
-            logger.warning("Cannot decode first frame of %s — skipping", stream_path)
-            continue
-        h, w = first.shape[:2]
-        with _FfmpegWriter(out_path, w, h, fps) as writer:
-            writer.write(first)
-            for raw in frames[1:]:
-                frame = cv2.imdecode(
-                    np.frombuffer(bytes(raw).rstrip(b"\x00"), np.uint8),
-                    cv2.IMREAD_COLOR,
-                )
-                if frame is not None:
-                    writer.write(frame)
-        logger.info("Video: %s → %s", stream_path, out_path)
+    if not rgb_streams and not depth_streams:
+        logger.warning("No video streams found in %s", hdf5_path)
+        return
 
-    # ── Depth streams ─────────────────────────────────────────────────────────
-    for stream_path, frames in depth_streams.items():
-        out_path = os.path.join(videos_dir, stream_path.replace("/", "_") + ".mp4")
-        h, w = frames.shape[1], frames.shape[2]
-        with _FfmpegWriter(out_path, w, h, fps) as writer:
-            for frame in frames:
-                writer.write(_depth_to_bgr(frame))
-        logger.info("Video: %s → %s", stream_path, out_path)
+    # ── helpers ───────────────────────────────────────────────────────────────
+    def _decode_rgb(raw: bytes) -> Optional[np.ndarray]:
+        buf = np.frombuffer(bytes(raw).rstrip(b"\x00"), np.uint8)
+        return cv2.imdecode(buf, cv2.IMREAD_COLOR)
+
+    def _resize_to_h(img: np.ndarray, h: int) -> np.ndarray:
+        ih, iw = img.shape[:2]
+        if ih == h:
+            return img
+        new_w = max(1, round(iw * h / ih))
+        return cv2.resize(img, (new_w, h), interpolation=cv2.INTER_LINEAR)
+
+    def _add_label(img: np.ndarray, label: str) -> np.ndarray:
+        out = img.copy()
+        cv2.putText(out, label, (6, 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(out, label, (6, 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        return out
+
+    def _sensor_of(key: str) -> str:
+        """Extract the middle path component, e.g. 'tactile/left_gsmini/rgb' → 'left_gsmini'."""
+        parts = key.split("/")
+        return parts[1] if len(parts) >= 3 else key
+
+    # ── stream ordering ───────────────────────────────────────────────────────
+    # Row 0: observation/* rgb (sorted)
+    obs_keys: List[Tuple[str, str]] = [
+        (k, _sensor_of(k))          # (hdf5_path, label)
+        for k in sorted(k for k in rgb_streams if k.startswith("observation/"))
+    ]
+
+    # Row 1: tactile — for each sensor (sorted), rgb then depth
+    sensors = sorted(set(
+        _sensor_of(k)
+        for k in list(rgb_streams) + list(depth_streams)
+        if k.startswith("tactile/")
+    ))
+    tac_keys: List[Tuple[str, str]] = []
+    for sensor in sensors:
+        rgb_key = f"tactile/{sensor}/rgb"
+        dep_key = f"tactile/{sensor}/depth"
+        if rgb_key in rgb_streams:
+            tac_keys.append((rgb_key, f"{sensor} rgb"))
+        if dep_key in depth_streams:
+            tac_keys.append((dep_key, f"{sensor} depth"))
+
+    rows_spec: List[List[Tuple[str, str]]] = [r for r in [obs_keys, tac_keys] if r]
+    if not rows_spec:
+        logger.warning("No streams to tile — skipping video export")
+        return
+
+    # ── sample first frames → discover sizes ──────────────────────────────────
+    def _first_frame(key: str) -> Optional[np.ndarray]:
+        if key in rgb_streams:
+            return _decode_rgb(rgb_streams[key][0])
+        if key in depth_streams:
+            return _depth_to_bgr(depth_streams[key][0])
+        return None
+
+    first_frames: Dict[str, np.ndarray] = {}
+    for row in rows_spec:
+        for key, _ in row:
+            img = _first_frame(key)
+            if img is not None:
+                first_frames[key] = img
+
+    if not first_frames:
+        logger.warning("Could not decode any frames — skipping video export")
+        return
+
+    tile_h = max(img.shape[0] for img in first_frames.values())
+
+    # ── frame fetcher ─────────────────────────────────────────────────────────
+    def _get_frame(key: str, idx: int) -> np.ndarray:
+        img: Optional[np.ndarray] = None
+        if key in rgb_streams and idx < len(rgb_streams[key]):
+            img = _decode_rgb(rgb_streams[key][idx])
+        elif key in depth_streams and idx < len(depth_streams[key]):
+            img = _depth_to_bgr(depth_streams[key][idx])
+        if img is None:
+            ref = first_frames.get(key, np.zeros((tile_h, tile_h, 3), np.uint8))
+            img = np.zeros_like(ref)
+        return _resize_to_h(img, tile_h)
+
+    # ── pre-compute canvas dimensions ─────────────────────────────────────────
+    def _row_px_width(row: List[Tuple[str, str]]) -> int:
+        total = 0
+        for key, _ in row:
+            ref = first_frames.get(key)
+            if ref is not None:
+                ih, iw = ref.shape[:2]
+                total += max(1, round(iw * tile_h / ih))
+        return total
+
+    canvas_w = max(_row_px_width(row) for row in rows_spec)
+    canvas_h = tile_h * len(rows_spec)
+
+    def _build_row(row: List[Tuple[str, str]], idx: int) -> np.ndarray:
+        tiles = [_add_label(_get_frame(key, idx), label) for key, label in row]
+        row_img = np.concatenate(tiles, axis=1)
+        # pad right if narrower than canvas
+        if row_img.shape[1] < canvas_w:
+            pad = np.zeros((tile_h, canvas_w - row_img.shape[1], 3), np.uint8)
+            row_img = np.concatenate([row_img, pad], axis=1)
+        return row_img
+
+    # ── total frame count ─────────────────────────────────────────────────────
+    all_lengths = (
+        [len(rgb_streams[k]) for k, _ in obs_keys if k in rgb_streams]
+        + [len(rgb_streams[k]) for k, _ in tac_keys if k in rgb_streams]
+        + [len(depth_streams[k]) for k, _ in tac_keys if k in depth_streams]
+    )
+    N = max(all_lengths) if all_lengths else 0
+    if N == 0:
+        logger.warning("All streams empty — skipping video export")
+        return
+
+    # ── write tiled video ─────────────────────────────────────────────────────
+    out_path = os.path.join(videos_dir, "tiled.mp4")
+    with _FfmpegWriter(out_path, canvas_w, canvas_h, fps) as writer:
+        for i in range(N):
+            canvas = np.concatenate([_build_row(row, i) for row in rows_spec], axis=0)
+            writer.write(canvas)
+
+    logger.info(
+        "Tiled video (%d streams, %d frames, %dx%d) → %s",
+        len(first_frames), N, canvas_w, canvas_h, out_path,
+    )
 
 
 def process_session_worker(args: Tuple) -> str:
